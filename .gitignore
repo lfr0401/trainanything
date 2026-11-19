@@ -1,0 +1,17 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+.venv/
+
+# Ultralytics 缓存
+.ultralytics/
+*.cache
+
+# 权重与训练产物（体积大，不入库）
+*.pt
+runs/
+
+# 系统
+.DS_Store
+Thumbs.db

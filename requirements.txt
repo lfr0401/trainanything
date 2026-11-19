@@ -1,0 +1,28 @@
+# YOLO 训练与检测 GUI 依赖
+#
+# 安装：
+#   python -m venv venv
+#   venv\Scripts\activate          (Windows)
+#   source venv/bin/activate       (Linux / macOS)
+#   pip install -r requirements.txt
+#
+# 说明：
+# - 下面用 PyPI 默认源，torch wheel 自带 CUDA 12.x 运行时，NVIDIA 显卡可直接用。
+# - 无 NVIDIA 显卡想装纯 CPU 版，改用：
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+# - 需要指定 CUDA 版本（如 12.4），改用：
+#     pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
+# - YOLO26 需要较新的 ultralytics（>=8.4）。
+
+# 图形界面
+customtkinter>=5.2.0
+Pillow>=10.0.0
+
+# 训练与推理框架
+torch>=2.5.1
+torchvision>=0.20.1
+ultralytics>=8.4.0
+
+# 图像 / 视频处理
+opencv-python>=4.9.0
+numpy>=1.26.0
