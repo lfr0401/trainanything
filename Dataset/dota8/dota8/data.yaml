@@ -1,0 +1,27 @@
+# DOTA8 旋转框检测数据集（Ultralytics 官方 8 图测试集）
+# 用于 obb 任务训练
+
+# path 必改：clone 后改成你本机 Dataset/dota8/dota8 的绝对路径
+# train/val 是相对 path 的子路径，不用改
+path: E:/你的clone路径/Dataset/dota8/dota8
+train: images/train
+val: images/val
+
+# 类别数（DOTA 1.0 的 15 类）
+nc: 15
+names:
+  0: plane
+  1: ship
+  2: storage tank
+  3: baseball diamond
+  4: tennis court
+  5: basketball court
+  6: ground track field
+  7: harbor
+  8: bridge
+  9: large vehicle
+  10: small vehicle
+  11: helicopter
+  12: roundabout
+  13: soccer ball field
+  14: swimming pool

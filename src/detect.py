@@ -61,7 +61,16 @@ def normalize_path(file_path: Union[str, Path]) -> Path:
     except Exception:
         raise ValueError(f"Invalid path: {file_path}")
 
-def _format_label_lines(result, task, conf_threshold):
+def _task_supports_track(task):
+    """从插件注册表判断任务是否支持跟踪，避免写死任务列表。"""
+    try:
+        from src.plugins import supports_track
+        return supports_track(task)
+    except Exception:
+        return task in {"detect", "segment", "pose", "obb"}
+
+
+def _format_label_lines(result, task, conf_threshold, with_track=False):
     """Build YOLO-style label lines for one prediction result, adapted to task.
 
     detect  : cls conf x1 y1 x2 y2
@@ -69,6 +78,7 @@ def _format_label_lines(result, task, conf_threshold):
     pose    : cls conf x1 y1 x2 y2 kx1 ky1 kv1 ...       (keypoints + visibility)
     obb     : cls conf x1 y1 x2 y2 cx1 cy1 cx2 cy2 cx3 cy3 cx4 cy4
     classify: cls conf
+    开启目标跟踪时，每行末尾追加目标编号 track_id。
     """
     lines = []
     if task == "classify":
@@ -94,6 +104,9 @@ def _format_label_lines(result, task, conf_threshold):
         cls = int(box.cls[0])
         x1, y1, x2, y2 = [int(v) for v in box.xyxy[0]]
         parts = [str(cls), f"{conf:.4f}", str(x1), str(y1), str(x2), str(y2)]
+        # 目标跟踪：从 box.id 读取跨帧一致的编号，追加到行尾
+        if with_track and getattr(box, "id", None) is not None:
+            parts.append(str(int(box.id[0])))
 
         if task == "segment" and masks is not None and i < len(masks.xyn):
             for px, py in masks.xyn[i]:
@@ -133,8 +146,12 @@ def get_media_files(directory: Union[str, Path]) -> tuple[List[Path], List[Path]
         
     return sorted(image_files), sorted(video_files)
 
-def process_video(video_path: Path, model, output_dir: Path, conf_threshold: float = 0.5, task: str = "detect"):
-    """Process a video file and save detection results"""
+def process_video(video_path: Path, model, output_dir: Path, conf_threshold: float = 0.5,
+                  task: str = "detect", tracking: bool = False, tracker: str = "bytetrack.yaml"):
+    """Process a video file and save detection results.
+
+    tracking=True 时用 model.track(persist=True) 做跨帧目标跟踪，标签末尾追加目标 ID。
+    """
     cap = cv2.VideoCapture(str(video_path))
     if not cap.isOpened():
         print(f"Error opening video file: {video_path}")
@@ -170,11 +187,16 @@ def process_video(video_path: Path, model, output_dir: Path, conf_threshold: flo
             progress = (frame_count / total_frames) * 100
             print(f"\rProcessing video: {progress:.1f}% ({frame_count}/{total_frames} frames)", end="")
 
-        # Detect objects in frame
-        results = model.predict(frame, save=False, conf=conf_threshold)
-        
+        # Detect objects in frame（tracking 时启用跨帧目标跟踪）
+        if tracking:
+            results = model.track(
+                frame, persist=True, tracker=tracker, save=False, conf=conf_threshold, verbose=False
+            )
+        else:
+            results = model.predict(frame, save=False, conf=conf_threshold, verbose=False)
+
         # Only process frames with detections above threshold
-        label_lines = _format_label_lines(results[0], task, conf_threshold)
+        label_lines = _format_label_lines(results[0], task, conf_threshold, with_track=tracking)
         if label_lines:
             # Draw bounding boxes
             annotated_frame = results[0].plot()
@@ -265,11 +287,16 @@ def _predict_images_one_by_one(model, image_files, images_out, labels_out, conf_
 
 
 def detect_images(images_folder, model_path, callback=None, progress_callback=None, conf_threshold=0.5,
-                  selected_files=None):
+                  selected_files=None, tracking=False, tracker="bytetrack.yaml"):
     model = YOLO(model_path)
     task = getattr(model, "task", "detect") or "detect"
+    # 分类任务没有框，无法跟踪；按插件声明屏蔽
+    if tracking and not _task_supports_track(task):
+        tracking = False
+        if progress_callback:
+            progress_callback(f"Task '{task}' does not support tracking, disabled.")
     if progress_callback:
-        progress_callback(f"Task: {task}")
+        progress_callback(f"Task: {task}" + (" (tracking on)" if tracking else ""))
 
     image_files = []
     video_files = []
@@ -314,7 +341,10 @@ def detect_images(images_folder, model_path, callback=None, progress_callback=No
     for index, video_file in enumerate(video_files, start=1):
         if progress_callback:
             progress_callback(f"Processing video {index}/{len(video_files)}: {video_file.name}")
-        process_video(video_file, model, results_dir, conf_threshold=conf_threshold, task=task)
+        process_video(
+            video_file, model, results_dir, conf_threshold=conf_threshold,
+            task=task, tracking=tracking, tracker=tracker,
+        )
 
     if callback:
         callback(str(results_dir))

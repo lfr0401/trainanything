@@ -17,9 +17,11 @@ def normalize_path(path):
     return str(Path(path).resolve())
 
 class CameraDetection:
-    def __init__(self, model_path, conf_threshold=0.5):
+    def __init__(self, model_path, conf_threshold=0.5, tracking=False, tracker="bytetrack.yaml"):
         self.model = YOLO(model_path)
         self.conf_threshold = conf_threshold
+        self.tracking = tracking
+        self.tracker = tracker
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.model.to(self.device)
         self.cap = None
@@ -43,6 +45,14 @@ class CameraDetection:
     def set_save_directory(self, directory):
         self.save_dir = directory
 
+    def _infer(self, frame):
+        """统一推理入口：tracking 时用 model.track 保持目标 ID 跨帧一致。"""
+        if self.tracking:
+            return self.model.track(
+                frame, persist=True, tracker=self.tracker, conf=self.conf_threshold, verbose=False
+            )
+        return self.model(frame, conf=self.conf_threshold, verbose=False)
+
     def show_camera_stream(self, display_label):
         self.running = True
         threading.Thread(target=self._update_stream, args=(display_label,), daemon=True).start()
@@ -53,7 +63,7 @@ class CameraDetection:
             if not ret:
                 break
 
-            results = self.model(frame)
+            results = self._infer(frame)
             detection_frame = frame.copy()
             self._draw_bounding_boxes(detection_frame, results)
 
@@ -107,7 +117,8 @@ class CameraDetection:
 
                 color = colors[label]
                 cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
-                text = f"{label}: {confidence:.2f}"
+                id_text = f"ID{int(result.id[0])} " if (self.tracking and getattr(result, "id", None) is not None) else ""
+                text = f"{id_text}{label}: {confidence:.2f}"
                 cv2.putText(frame, text, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
 
     def capture_frame(self):
@@ -133,7 +144,7 @@ class CameraDetection:
         cv2.imwrite(origin_image_path, frame, [cv2.IMWRITE_PNG_COMPRESSION, 9])
 
         # 検出結果を描画
-        results = self.model(frame)
+        results = self._infer(frame)
         self._draw_bounding_boxes(frame, results)
 
         # 検出結果画像を保存（JPEG形式で容量を抑える）
@@ -148,7 +159,10 @@ class CameraDetection:
                     x1, y1, x2, y2 = map(int, result.xyxy[0])
                     label = self.model.names[int(result.cls[0])]
                     confidence = result.conf[0]
-                    f.write(f"{label} {confidence:.2f} {x1} {y1} {x2} {y2}\n")
+                    id_part = ""
+                    if self.tracking and getattr(result, "id", None) is not None:
+                        id_part = f" {int(result.id[0])}"
+                    f.write(f"{label} {confidence:.2f} {x1} {y1} {x2} {y2}{id_part}\n")
 
         return origin_image_path, detection_image_path, txt_path
 

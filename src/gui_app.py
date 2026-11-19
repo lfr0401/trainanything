@@ -16,46 +16,15 @@ from PIL import Image, ImageTk
 os.environ.setdefault("YOLO_CONFIG_DIR", str(Path.cwd() / ".ultralytics"))
 
 from src.gui_text import TEXT
+from src.plugins import (
+    TASK_KEYS, MODEL_OPTIONS_BY_TASK, MODEL_NAME_TO_TYPE_BY_TASK,
+    supports_track, dataset_kind,
+)
 
+# 跟踪器选项：内部值 -> 配置文件名（ultralytics/cfg/trackers/ 内置）
+TRACKER_OPTIONS = (("bytetrack", "bytetrack.yaml"), ("botsort", "botsort.yaml"))
+TRACKER_CONFIG = dict(TRACKER_OPTIONS)
 
-# 各家族的尺寸档位（显示后缀, 权重后缀）
-_MODEL_SIZES = {
-    "yolo26": [("Nano", "n"), ("Small", "s"), ("Medium", "m"), ("Large", "l"), ("ExtraLarge", "x")],
-    "yolo12": [("Nano", "n"), ("Small", "s"), ("Medium", "m"), ("Large", "l"), ("ExtraLarge", "x")],
-    "yolo11": [("Nano", "n"), ("Small", "s"), ("Medium", "m"), ("Large", "l"), ("ExtraLarge", "x")],
-    "yolov10": [("Nano", "n"), ("Small", "s"), ("Medium", "m"), ("Balanced", "b"), ("Large", "l"), ("ExtraLarge", "x")],
-    "yolov9": [("Compact", "c"), ("Enhanced", "e")],
-    "yolov8": [("Nano", "n"), ("Small", "s"), ("Medium", "m"), ("Large", "l"), ("ExtraLarge", "x")],
-}
-_FAMILY_LABELS = {
-    "yolo26": "YOLO26", "yolo12": "YOLO12", "yolo11": "YOLO11",
-    "yolov10": "YOLOv10", "yolov9": "YOLOv9", "yolov8": "YOLOv8",
-}
-# 各任务支持的家族 + 权重名后缀（依据 ultralytics 官方内置模型配置）
-TASK_KEYS = ["detect", "segment", "classify", "pose", "obb"]
-_TASK_FAMILIES = {
-    "detect": (["yolo26", "yolo12", "yolo11", "yolov10", "yolov9", "yolov8"], ""),
-    "segment": (["yolo26", "yolo11", "yolov9", "yolov8"], "-seg"),
-    "classify": (["yolo26", "yolo11", "yolov8"], "-cls"),
-    "pose": (["yolo26", "yolo11", "yolov8"], "-pose"),
-    "obb": (["yolo26", "yolo11", "yolov8"], "-obb"),
-}
-
-
-def build_model_options(task):
-    families, suffix = _TASK_FAMILIES.get(task, _TASK_FAMILIES["detect"])
-    options = []
-    for family in families:
-        for size_label, size_suffix in _MODEL_SIZES[family]:
-            options.append((
-                f"{_FAMILY_LABELS[family]}-{size_label}{suffix}",
-                f"{family}{size_suffix}{suffix}",
-            ))
-    return options
-
-
-MODEL_OPTIONS_BY_TASK = {task: build_model_options(task) for task in TASK_KEYS}
-MODEL_NAME_TO_TYPE_BY_TASK = {task: dict(opts) for task, opts in MODEL_OPTIONS_BY_TASK.items()}
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp", ".tif", ".tiff"}
 
 COLORS = {
@@ -144,11 +113,11 @@ class YoloGuiApp:
         ctk.set_widget_scaling(1.0)
 
         self.root = ctk.CTk()
-        self.root.title("YOLO 训练与检测")
         self.root.minsize(1180, 720)
         self.root.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.language_var = ctk.StringVar(value="zh")
+        self.root.title(TEXT["zh"]["app_window_title"])
         self.appearance_var = ctk.StringVar(value="Dark")
         self.ui_scale_var = ctk.StringVar(value="100")
         self.selected_task_var = ctk.StringVar(value="detect")
@@ -173,6 +142,11 @@ class YoloGuiApp:
         self.detection_save_dir = ""
         self.detection_confidence = "0.5"
         self.camera_confidence = "0.5"
+        # 目标跟踪（仅视频/摄像头生效）
+        self.tracking_var = tk.BooleanVar(value=False)
+        self.tracker_var = ctk.StringVar(value=self.t("tracker_bytetrack"))
+        self.camera_tracking_var = tk.BooleanVar(value=False)
+        self.camera_tracker_var = ctk.StringVar(value=self.t("tracker_bytetrack"))
         self.camera_devices = []
         self.camera_device_labels = {}
 
@@ -901,7 +875,7 @@ class YoloGuiApp:
     def select_data_yaml(self):
         if self.busy:
             return
-        if self.selected_task_var.get() == "classify":
+        if dataset_kind(self.selected_task_var.get()) == "folder":
             path = filedialog.askdirectory(title=self.t("dataset_folder"))
         else:
             path = filedialog.askopenfilename(
@@ -934,7 +908,7 @@ class YoloGuiApp:
         self._refresh_path_label("dataset_yaml", "")
         if hasattr(self, "dataset_label") and self.dataset_label.winfo_exists():
             self.dataset_label.configure(
-                text=self.t("dataset_folder") if task == "classify" else self.t("dataset_yaml")
+                text=self.t("dataset_folder") if dataset_kind(task) == "folder" else self.t("dataset_yaml")
             )
 
     def open_model_selection_window(self):
@@ -1392,6 +1366,39 @@ class YoloGuiApp:
         self.main_lock_widgets.append(self.detection_conf_entry)
         row += 2
 
+        # 目标跟踪（仅对视频生效，图片仍走普通检测）
+        track_switch = ctk.CTkCheckBox(
+            controls,
+            text=self.t("tracking_enable"),
+            variable=self.tracking_var,
+            font=("Segoe UI", 13),
+            text_color=COLORS["text"],
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            corner_radius=6,
+        )
+        track_switch.grid(row=row, column=0, sticky="w", padx=14, pady=(6, 2))
+        self.main_lock_widgets.append(track_switch)
+        row += 1
+        ctk.CTkLabel(
+            controls, text=self.t("tracking_tracker"),
+            font=("Segoe UI", 12), text_color=COLORS["muted"], anchor="w",
+        ).grid(row=row, column=0, sticky="ew", padx=14, pady=(2, 4))
+        row += 1
+        self.tracker_menu = ctk.CTkOptionMenu(
+            controls,
+            variable=self.tracker_var,
+            values=[self.t("tracker_bytetrack"), self.t("tracker_botsort")],
+            height=36,
+            fg_color=COLORS["panel_alt"],
+            button_color=COLORS["blue"],
+            button_hover_color=COLORS["blue_hover"],
+            text_color=COLORS["text"],
+        )
+        self.tracker_menu.grid(row=row, column=0, sticky="ew", padx=14, pady=(0, 4))
+        self.main_lock_widgets.append(self.tracker_menu)
+        row += 1
+
         self.start_detection_button = ctk.CTkButton(
             controls,
             text=self.t("start_detection"),
@@ -1502,7 +1509,11 @@ class YoloGuiApp:
         if count:
             label.configure(text=self.t("files_selected").format(count=count), text_color=COLORS["text"])
         else:
-            label.configure(text=self.t("no_files_selected"), text_color=COLORS["muted"])
+            if self.detection_images_folder_path:
+                text = self.t("no_files_selected_with_folder")
+            else:
+                text = self.t("no_files_selected")
+            label.configure(text=text, text_color=COLORS["muted"])
 
     def select_detection_model(self):
         if self.busy:
@@ -1528,6 +1539,8 @@ class YoloGuiApp:
         if confidence is None:
             return
         self.detection_confidence = self.detection_conf_entry.get().strip()
+        tracking = bool(self.tracking_var.get())
+        tracker_cfg = self._resolve_tracker(self.tracker_var.get())
 
         self.set_busy(True)
         self.image_paths = []
@@ -1544,10 +1557,19 @@ class YoloGuiApp:
         self.clear_detection_log()
         self.append_detection_log(self.t("detect_running"))
 
-        thread = threading.Thread(target=self._run_image_detection, args=(confidence,), daemon=True)
+        thread = threading.Thread(
+            target=self._run_image_detection, args=(confidence, tracking, tracker_cfg), daemon=True
+        )
         thread.start()
 
-    def _run_image_detection(self, confidence):
+    def _resolve_tracker(self, shown_text):
+        """把界面显示名映射回 ultralytics 跟踪器配置名。"""
+        for key, cfg in TRACKER_OPTIONS:
+            if shown_text == self.t(f"tracker_{key}"):
+                return cfg
+        return TRACKER_CONFIG["bytetrack"]
+
+    def _run_image_detection(self, confidence, tracking=False, tracker_cfg="bytetrack.yaml"):
         try:
             from src.detect import detect_images
 
@@ -1564,6 +1586,8 @@ class YoloGuiApp:
                 progress_callback=progress,
                 conf_threshold=confidence,
                 selected_files=self.detection_selected_files or None,
+                tracking=tracking,
+                tracker=tracker_cfg,
             )
         except Exception:
             self.queue.put(("detect_error", traceback.format_exc()))
@@ -1721,6 +1745,39 @@ class YoloGuiApp:
         self.main_lock_widgets.append(self.camera_conf_entry)
         row += 2
 
+        # 目标跟踪（摄像头实时生效）
+        cam_track_switch = ctk.CTkCheckBox(
+            controls,
+            text=self.t("tracking_enable"),
+            variable=self.camera_tracking_var,
+            font=("Segoe UI", 13),
+            text_color=COLORS["text"],
+            fg_color=COLORS["blue"],
+            hover_color=COLORS["blue_hover"],
+            corner_radius=6,
+        )
+        cam_track_switch.grid(row=row, column=0, sticky="w", padx=14, pady=(6, 2))
+        self.main_lock_widgets.append(cam_track_switch)
+        row += 1
+        ctk.CTkLabel(
+            controls, text=self.t("tracking_tracker"),
+            font=("Segoe UI", 12), text_color=COLORS["muted"], anchor="w",
+        ).grid(row=row, column=0, sticky="ew", padx=14, pady=(2, 4))
+        row += 1
+        self.camera_tracker_menu = ctk.CTkOptionMenu(
+            controls,
+            variable=self.camera_tracker_var,
+            values=[self.t("tracker_bytetrack"), self.t("tracker_botsort")],
+            height=36,
+            fg_color=COLORS["panel_alt"],
+            button_color=COLORS["blue"],
+            button_hover_color=COLORS["blue_hover"],
+            text_color=COLORS["text"],
+        )
+        self.camera_tracker_menu.grid(row=row, column=0, sticky="ew", padx=14, pady=(0, 4))
+        self.main_lock_widgets.append(self.camera_tracker_menu)
+        row += 1
+
         self.camera_button = ctk.CTkButton(
             controls,
             text=self.t("start"),
@@ -1793,17 +1850,24 @@ class YoloGuiApp:
         if confidence is None:
             return
         self.camera_confidence = self.camera_conf_entry.get().strip()
+        tracking = bool(self.camera_tracking_var.get())
+        tracker_cfg = self._resolve_tracker(self.camera_tracker_var.get())
 
         self.set_busy(True)
         self.camera_button.configure(state="disabled")
         self.camera_status_label.configure(text=self.t("camera_running"), text_color=COLORS["accent"])
-        threading.Thread(target=self._load_camera, args=(camera_id, confidence), daemon=True).start()
+        threading.Thread(
+            target=self._load_camera, args=(camera_id, confidence, tracking, tracker_cfg), daemon=True
+        ).start()
 
-    def _load_camera(self, camera_id, confidence):
+    def _load_camera(self, camera_id, confidence, tracking=False, tracker_cfg="bytetrack.yaml"):
         try:
             from src.camera import CameraDetection
 
-            camera = CameraDetection(self.detection_model_path, conf_threshold=confidence)
+            camera = CameraDetection(
+                self.detection_model_path, conf_threshold=confidence,
+                tracking=tracking, tracker=tracker_cfg,
+            )
             camera.set_save_directory(self.detection_save_dir)
             camera.start_camera(camera_id)
             self.queue.put(("camera_started", camera))

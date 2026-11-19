@@ -1,0 +1,17 @@
+# COCO8-pose 姿态估计数据集（Ultralytics 官方 8 图测试集）
+# 用于 pose 任务训练
+
+# path 必改：clone 后改成你本机 Dataset/coco8-pose/coco8-pose 的绝对路径
+# train/val 是相对 path 的子路径，不用改
+path: E:/你的clone路径/Dataset/coco8-pose/coco8-pose
+train: images/train
+val: images/val
+
+# 类别数
+nc: 1
+names:
+  0: person
+
+# 关键点：17 个点，每点 3 个值 (x, y, visibility)
+kpt_shape: [17, 3]
+flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
