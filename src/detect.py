@@ -54,6 +54,22 @@ def is_valid_video(file_path: Union[str, Path]) -> bool:
     except Exception:
         return False
 
+def _find_dataset_root(directory: Path):
+    """Return the YOLO dataset root if directory sits inside one, else None.
+
+    A dataset root is detected by the standard images/ + labels/ sibling layout.
+    Detection outputs must never be written inside such a tree, otherwise the
+    copied images/labels get picked up by the next training run as corrupt data.
+    """
+    for parent in [directory] + list(directory.parents):
+        try:
+            if (parent / "images").is_dir() and (parent / "labels").is_dir():
+                return parent
+        except OSError:
+            continue
+    return None
+
+
 def normalize_path(file_path: Union[str, Path]) -> Path:
     """Normalize path to handle Japanese characters and different path formats"""
     try:
@@ -62,10 +78,10 @@ def normalize_path(file_path: Union[str, Path]) -> Path:
         raise ValueError(f"Invalid path: {file_path}")
 
 def _task_supports_track(task):
-    """从插件注册表判断任务是否支持跟踪，避免写死任务列表。"""
+    """从插件注册表判断 YOLO 算法下该任务是否支持跟踪，避免写死任务列表。"""
     try:
         from src.plugins import supports_track
-        return supports_track(task)
+        return supports_track(task, "yolo")
     except Exception:
         return task in {"detect", "segment", "pose", "obb"}
 
@@ -324,7 +340,18 @@ def detect_images(images_folder, model_path, callback=None, progress_callback=No
         raise ValueError(message)
 
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_dir = base_dir / 'results' / timestamp
+    # 输入若位于 YOLO 数据集内部（含 images/ + labels/ 的目录树），结果写到数据集
+    # 旁边而不是里面，避免检测输出的 6 列标签被下次训练当成 corrupt 数据扫描进去。
+    dataset_root = _find_dataset_root(base_dir)
+    if dataset_root is not None:
+        output_base = dataset_root.parent / f"{dataset_root.name}_results"
+        if progress_callback:
+            progress_callback(
+                f"Input is inside dataset {dataset_root}; writing results outside it: {output_base}"
+            )
+    else:
+        output_base = base_dir
+    results_dir = output_base / 'results' / timestamp
     results_dir.mkdir(parents=True, exist_ok=True)
     if progress_callback:
         progress_callback(f"Output: {results_dir}")

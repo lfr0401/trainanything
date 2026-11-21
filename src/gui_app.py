@@ -5,6 +5,7 @@ import sys
 import threading
 import time
 import traceback
+import importlib
 from pathlib import Path
 from queue import Empty, Queue
 
@@ -17,8 +18,9 @@ os.environ.setdefault("YOLO_CONFIG_DIR", str(Path.cwd() / ".ultralytics"))
 
 from src.gui_text import TEXT
 from src.plugins import (
-    TASK_KEYS, MODEL_OPTIONS_BY_TASK, MODEL_NAME_TO_TYPE_BY_TASK,
-    supports_track, dataset_kind,
+    TASK_KEYS, algorithms_for_task, model_options, model_type_of,
+    dataset_kind, supports_track, family_label_of, algorithm_label_key,
+    train_module_of, detect_module_of, detect_func_of, registered_algorithms,
 )
 
 # 跟踪器选项：内部值 -> 配置文件名（ultralytics/cfg/trackers/ 内置）
@@ -121,7 +123,8 @@ class YoloGuiApp:
         self.appearance_var = ctk.StringVar(value="Dark")
         self.ui_scale_var = ctk.StringVar(value="100")
         self.selected_task_var = ctk.StringVar(value="detect")
-        self.selected_model_var = ctk.StringVar(value=MODEL_OPTIONS_BY_TASK["detect"][0][0])
+        self.selected_algorithm_var = ctk.StringVar(value=algorithms_for_task("detect")[0])
+        self.selected_model_var = ctk.StringVar(value=model_options("detect", "yolo")[0][0])
         self.camera_device_var = ctk.StringVar(value="")
 
         self.current_view = "train"
@@ -622,19 +625,47 @@ class YoloGuiApp:
         self.main_lock_widgets.append(self.task_menu)
         row += 2
 
+        # 算法下拉：同一个任务可选不同算法（如 classify 可选 YOLO / CNN）
+        ctk.CTkLabel(
+            form,
+            text=self.t("algorithm_type"),
+            font=("Segoe UI", 13, "bold"),
+            text_color=COLORS["text"],
+            anchor="w",
+        ).grid(row=row, column=0, sticky="ew", padx=14, pady=(12, 4))
+        current_task = self.selected_task_var.get()
+        current_algorithm = self.selected_algorithm_var.get()
+        self.algorithm_menu = ctk.CTkOptionMenu(
+            form,
+            values=[self.t(algorithm_label_key(a)) for a in algorithms_for_task(current_task)],
+            height=40,
+            corner_radius=8,
+            fg_color=COLORS["panel_alt"],
+            button_color=COLORS["blue"],
+            button_hover_color=COLORS["blue_hover"],
+            dropdown_fg_color=COLORS["panel_alt"],
+            text_color=COLORS["text"],
+            command=self.on_algorithm_changed,
+        )
+        self.algorithm_menu.set(self.t(algorithm_label_key(current_algorithm)))
+        self.algorithm_menu.grid(row=row + 1, column=0, sticky="ew", padx=14, pady=(0, 4))
+        self.main_lock_widgets.append(self.algorithm_menu)
+        row += 2
+
         self._path_selector(form, row, "dataset_yaml", "data_yaml_path", self.select_data_yaml, "dataset_yaml")
         self.dataset_label = form.grid_slaves(row=row, column=0)[0]
         row += 2
         self._path_selector(form, row, "save_folder", "model_save_path", self.select_model_save_folder, "model_save")
         row += 2
 
-        ctk.CTkLabel(
+        self.model_section_label = ctk.CTkLabel(
             form,
-            text=self.t("yolo_model"),
+            text=self.t(family_label_of(self.selected_task_var.get(), self.selected_algorithm_var.get())),
             font=("Segoe UI", 13, "bold"),
             text_color=COLORS["text"],
             anchor="w",
-        ).grid(row=row, column=0, sticky="ew", padx=14, pady=(12, 4))
+        )
+        self.model_section_label.grid(row=row, column=0, sticky="ew", padx=14, pady=(12, 4))
         model_row = ctk.CTkFrame(form, fg_color="transparent")
         model_row.grid(row=row + 1, column=0, sticky="ew", padx=14, pady=(0, 4))
         model_row.grid_columnconfigure(0, weight=1)
@@ -875,7 +906,7 @@ class YoloGuiApp:
     def select_data_yaml(self):
         if self.busy:
             return
-        if dataset_kind(self.selected_task_var.get()) == "folder":
+        if dataset_kind(self.selected_task_var.get(), self.selected_algorithm_var.get()) == "folder":
             path = filedialog.askdirectory(title=self.t("dataset_folder"))
         else:
             path = filedialog.askopenfilename(
@@ -895,34 +926,65 @@ class YoloGuiApp:
             self._refresh_path_label("model_save", self.model_save_path)
 
     def on_task_changed(self, display_text):
-        """切换任务时，同步切换可选模型、数据集选择方式并重置当前选择。"""
+        """切换任务：刷新该任务可用的算法，默认选第一个算法，再按算法刷新模型/数据集。"""
         task = next((key for key in TASK_KEYS if self.t(f"task_{key}") == display_text), "detect")
         self.selected_task_var.set(task)
-        first_model = MODEL_OPTIONS_BY_TASK[task][0][0]
+
+        algorithms = algorithms_for_task(task)
+        if not algorithms:
+            algorithms = ["yolo"]
+        algorithm = algorithms[0]
+        self.selected_algorithm_var.set(algorithm)
+        if hasattr(self, "algorithm_menu") and self.algorithm_menu.winfo_exists():
+            self.algorithm_menu.configure(values=[self.t(algorithm_label_key(a)) for a in algorithms])
+            self.algorithm_menu.set(self.t(algorithm_label_key(algorithm)))
+
+        self._refresh_model_and_dataset()
+
+    def on_algorithm_changed(self, display_text):
+        """切换算法：刷新该算法在此任务下的模型清单和数据集选择方式。"""
+        task = self.selected_task_var.get()
+        algorithm = next(
+            (a for a in algorithms_for_task(task) if self.t(algorithm_label_key(a)) == display_text),
+            algorithms_for_task(task)[0],
+        )
+        self.selected_algorithm_var.set(algorithm)
+        self._refresh_model_and_dataset()
+
+    def _refresh_model_and_dataset(self):
+        """任务或算法变化后，统一刷新模型显示、模型区标题与数据集选择方式。"""
+        task = self.selected_task_var.get()
+        algorithm = self.selected_algorithm_var.get()
+        model_options_list = model_options(task, algorithm)
+        first_model = model_options_list[0][0] if model_options_list else ""
         self.selected_model_var.set(first_model)
         if hasattr(self, "selected_model_label") and self.selected_model_label.winfo_exists():
             self.selected_model_label.configure(text=first_model)
+        if hasattr(self, "model_section_label") and self.model_section_label.winfo_exists():
+            self.model_section_label.configure(text=self.t(family_label_of(task, algorithm)))
 
-        # 分类任务选目录，其余任务选 yaml；切换后清掉旧路径，避免类型不匹配
+        # 切换任务/算法后清掉旧数据集路径，避免类型不匹配
         self.data_yaml_path = ""
         self._refresh_path_label("dataset_yaml", "")
         if hasattr(self, "dataset_label") and self.dataset_label.winfo_exists():
             self.dataset_label.configure(
-                text=self.t("dataset_folder") if dataset_kind(task) == "folder" else self.t("dataset_yaml")
+                text=self.t("dataset_folder")
+                if dataset_kind(task, algorithm) == "folder"
+                else self.t("dataset_yaml")
             )
 
     def open_model_selection_window(self):
         if self.busy:
             return
         window = ctk.CTkToplevel(self.root)
-        window.title(self.t("select_yolo_model"))
+        window.title(self.t("select_model"))
         window.geometry("420x620")
         window.transient(self.root)
         window.grab_set()
 
         ctk.CTkLabel(
             window,
-            text=self.t("select_yolo_model"),
+            text=self.t("select_model"),
             font=("Segoe UI", 20, "bold"),
             anchor="w",
         ).pack(fill="x", padx=18, pady=(18, 8))
@@ -931,7 +993,8 @@ class YoloGuiApp:
         frame.grid_columnconfigure(0, weight=1)
 
         current_task = self.selected_task_var.get()
-        model_names = [name for name, _ in MODEL_OPTIONS_BY_TASK[current_task]]
+        current_algorithm = self.selected_algorithm_var.get()
+        model_names = [name for name, _ in model_options(current_task, current_algorithm)]
         current_family = ""
         for row, model_name in enumerate(model_names):
             family = model_name.split("-", 1)[0]
@@ -1074,7 +1137,8 @@ class YoloGuiApp:
         patience = self.train_state["patience"].strip()
         lr0 = self.train_state["lr0"].strip()
         current_task = self.selected_task_var.get()
-        selected_model_size = MODEL_NAME_TO_TYPE_BY_TASK[current_task].get(self.selected_model_var.get(), "")
+        current_algorithm = self.selected_algorithm_var.get()
+        selected_model_size = model_type_of(current_task, current_algorithm, self.selected_model_var.get())
 
         missing = []
         if not project_name:
@@ -1084,7 +1148,7 @@ class YoloGuiApp:
         if not self.model_save_path:
             missing.append(self.t("save_folder"))
         if not selected_model_size:
-            missing.append(self.t("yolo_model"))
+            missing.append(self.t("select_model"))
         if not input_size:
             missing.append(self.t("input_size"))
         if not epochs:
@@ -1108,7 +1172,7 @@ class YoloGuiApp:
             return None
 
         dataset_path = Path(self.data_yaml_path)
-        if current_task == "classify":
+        if dataset_kind(current_task, current_algorithm) == "folder":
             if not dataset_path.is_dir():
                 messagebox.showwarning(self.t("invalid_title"), self.t("folder_not_found"))
                 return None
@@ -1135,6 +1199,7 @@ class YoloGuiApp:
             "batch_size": batch_size_int,
             "model_type": selected_model_size,
             "task": current_task,
+            "algorithm": current_algorithm,
             "patience": patience_int,
             "lr0": lr0_float,
             "device": self.train_state["device"],
@@ -1168,10 +1233,11 @@ class YoloGuiApp:
         self.clear_train_log()
         self.append_train_log(self.t("train_started"))
 
+        train_module = train_module_of(settings["algorithm"])
         cmd_args = [
             sys.executable,
             "-m",
-            "src.train",
+            train_module,
             settings["project_name"],
             self.data_yaml_path,
             self.model_save_path,
@@ -1569,9 +1635,39 @@ class YoloGuiApp:
                 return cfg
         return TRACKER_CONFIG["bytetrack"]
 
+    def _detect_algorithm_of_weight(self, weight_path):
+        """探测权重属于哪个算法。
+
+        规则：
+        - checkpoint 含 algorithm 字段且在注册表中 -> 直接用（CNN/新语义分割权重都写了）
+        - 含 model_type 字段 -> 语义分割老权重，归到 semseg
+        - 其它（ultralytics YOLO 权重）-> yolo
+        """
+        try:
+            import torch
+            checkpoint = torch.load(weight_path, map_location="cpu", weights_only=False)
+            if isinstance(checkpoint, dict):
+                algo = checkpoint.get("algorithm", "")
+                if algo in registered_algorithms():
+                    return algo
+                if "model_type" in checkpoint and "semseg" in registered_algorithms():
+                    return "semseg"
+        except Exception:
+            pass
+        return "yolo"
+
+    def _load_detect_func(self, algorithm):
+        """按算法声明的模块名+函数名动态导入推理入口；加新算法无需改这里。"""
+        module_name = detect_module_of(algorithm)
+        func_name = detect_func_of(algorithm)
+        module = importlib.import_module(module_name)
+        return getattr(module, func_name)
+
     def _run_image_detection(self, confidence, tracking=False, tracker_cfg="bytetrack.yaml"):
         try:
-            from src.detect import detect_images
+            algorithm = self._detect_algorithm_of_weight(self.detection_model_path)
+            detect_images = self._load_detect_func(algorithm)
+            self.queue.put(("detect_log", f"Algorithm: {algorithm}"))
 
             def progress(message):
                 self.queue.put(("detect_log", message))
@@ -1862,6 +1958,13 @@ class YoloGuiApp:
 
     def _load_camera(self, camera_id, confidence, tracking=False, tracker_cfg="bytetrack.yaml"):
         try:
+            algorithm = self._detect_algorithm_of_weight(self.detection_model_path)
+            if algorithm != "yolo":
+                self.queue.put((
+                    "camera_error",
+                    f"算法 {algorithm} 暂不支持摄像头实时推理，请改用 YOLO 检测权重。",
+                ))
+                return
             from src.camera import CameraDetection
 
             camera = CameraDetection(

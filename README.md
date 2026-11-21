@@ -1,20 +1,27 @@
 # TrainAnything · 通用视觉训练推理平台
 
-一个基于 CustomTkinter 的桌面图形界面，把 YOLO 的**训练**与**推理**做成点击式操作：选数据集、选任务和模型、调参数、看实时日志，训练完直接在同一个界面里检测图片、视频或摄像头，视频还支持目标跟踪。面向不想记命令行参数的用户。
+一个基于 CustomTkinter 的桌面图形界面，把常见 CV 任务的**训练**与**推理**做成点击式操作：选数据集、选任务和算法、选模型、调参数、看实时日志，训练完直接在同一个界面里检测图片、视频或摄像头，视频还支持目标跟踪。面向不想记命令行参数的用户。
 
-项目采用**插件化任务注册表**：任务与可选模型由 `src/plugins/` 声明，GUI 从注册表生成下拉列表，新增任务无需改动主界面。详见[扩展新任务](#扩展新任务)。
+项目采用**任务 × 算法正交架构**：**任务**决定"做什么"（检测/分割/分类/姿态/旋转框），**算法**决定"用什么做"（YOLO / CNN / 语义分割网络）。同一个任务可以挂多个算法——例如图像分类既能用 YOLO-cls，也能用 ResNet 等 CNN；界面上按"任务 → 算法 → 模型"三级联动选择。所有算法在 `src/plugins/` 声明，训练与推理按算法分发到对应执行模块。新增算法只需加插件和执行模块，界面不动。详见[扩展新算法](#扩展新算法)。
 
-## 已内置任务（5 种 × 6 个 YOLO 家族）
+## 已内置任务 × 算法
 
-| 任务 | 权重后缀 | 支持的家族 |
+界面按 **任务 → 算法 → 模型** 三级联动：先选任务，再选该任务下可用的算法，模型列表随二者变化。
+
+| 任务 | 可用算法 | 模型清单 |
 |---|---|---|
-| 目标检测 detect | 无 | YOLO26 / 12 / 11 / v10 / v9 / v8 |
-| 实例分割 segment | `-seg` | YOLO26 / 11 / v9 / v8 |
-| 图像分类 classify | `-cls` | YOLO26 / 11 / v8 |
-| 姿态估计 pose | `-pose` | YOLO26 / 11 / v8 |
-| 旋转框检测 obb | `-obb` | YOLO26 / 11 / v8 |
+| 目标检测 detect | YOLO | YOLO26 / 12 / 11 / v10 / v9 / v8 |
+| 实例分割 segment | YOLO | YOLO26 / 11 / v9 / v8（`-seg`） |
+| 图像分类 classify | **YOLO** / **CNN** | YOLO26 / 11 / v8（`-cls`）；ResNet / EfficientNet / MobileNet |
+| 姿态估计 pose | YOLO | YOLO26 / 11 / v8（`-pose`） |
+| 旋转框检测 obb | YOLO | YOLO26 / 11 / v8（`-obb`） |
+| 语义分割 semseg | 语义分割网络 | U-Net / DeepLabV3+ / FCN |
 
-> 家族可用性以 Ultralytics 官方发布的预训练权重为准。例如 YOLO12 官方只提供检测权重，因此其它任务的下拉列表里不会出现 YOLO12。
+> 图像分类是"同任务多算法"的示例：选 YOLO 走 ultralytics 的 `-cls` 权重，选 CNN 走 torchvision 模型，数据集格式（分类目录）通用，界面一键切换。
+
+> YOLO 家族可用性以 Ultralytics 官方发布的预训练权重为准。例如 YOLO12 官方只提供检测权重，因此其它任务下不会出现 YOLO12。
+
+**实例分割 vs 语义分割**：`segment`（YOLO）逐目标输出多边形/掩码，同类多个目标是不同实例，适合计数和逐个分析；`semseg` 逐像素输出类别、同类目标合并成一片区域，适合医学影像、遥感地物分割。两者是不同任务，走不同算法，界面/训练/推理框架通用。
 
 界面截图：
 
@@ -22,11 +29,11 @@
 
 ## 功能特性
 
-- **多任务多模型**：一个界面覆盖检测、分割、分类、姿态、旋转框；切换任务时模型列表自动联动。
-- **插件化架构**：任务/模型元数据集中在 `src/plugins/`，GUI 只读注册表；加任务不改主界面，且启动不加载 torch 等重型库，界面响应快。
+- **多任务多算法多模型**：一个界面覆盖检测、分割、分类、姿态、旋转框；任务 → 算法 → 模型三级联动，同一任务下可切换不同算法（如分类可选 YOLO 或 CNN）。
+- **插件化架构**：算法/任务/模型元数据集中在 `src/plugins/`，GUI 只读注册表；加算法不改主界面，且启动不加载 torch 等重型库，界面响应快。
 - **目标跟踪**：视频与摄像头可用 ByteTrack / BoT-SORT，跨帧目标编号稳定，标签末尾追加 track_id。
 - **训练进度可视化**：epoch 进度、剩余时间、实时 loss / mAP50 / mAP50-95 / Top1 指标。
-- **灵活的数据集接入**：四类任务直接读 `data.yaml`，分类任务读数据集根目录。
+- **灵活的数据集接入**：检测/分割/姿态/旋转框读 `data.yaml`，分类与语义分割读数据集根目录。
 - **推理方式多样**：单张图片、多张图片、整个文件夹、视频、摄像头。
 - **标签按任务写出**：检测写框、分割追加多边形、姿态追加关键点、旋转框追加四角点、分类写类别与置信度。
 - **结果自动归档**：训练权重、环境报告、检测图片与标签按时间戳分目录保存。
@@ -92,7 +99,7 @@ python main.py
 
 ## 数据集准备
 
-这是最容易出错的一步。四类任务与分类任务的数据集格式**不通用**，按任务分别准备。
+这是最容易出错的一步。各任务的数据集格式**不通用**，按任务分别准备：检测/实例分割/姿态/旋转框用 `data.yaml`，分类与语义分割用数据集根目录。
 
 ### 检测 / 分割 / 姿态 / 旋转框：用 `data.yaml`
 
@@ -122,6 +129,23 @@ names: ['aircraft', 'bird', 'drone']
 
 > 同一份 yaml 可以切到任意前四类任务，但**数据本身必须匹配**——拿检测框去训分割会报错。项目已在 `Dataset/` 目录内置 Ultralytics 官方迷你数据集（`coco8` / `coco8-seg` / `coco8-pose` / `dota8` / `imagenet10`，每套 8~24 张图）：clone 后把对应 `data.yaml` 里的 `path` 改成你本机的绝对路径（只改这一行），即可直接跑通全部任务；也可以从 [Ultralytics assets](https://github.com/ultralytics/assets/releases) 下载其它版本。
 
+### 语义分割：图片 + 灰度 mask 目录
+
+语义分割不走 `data.yaml`，选数据集根目录即可。目录结构：
+
+```
+my_seg_data/
+  images/train/*.png     原图（RGB）
+  masks/train/*.png      灰度标签，像素值=类别 id（0 为背景）
+  images/val/*.png
+  masks/val/*.png
+  classes.txt            （可选）每行一个类别名，第 0 行为背景
+```
+
+- 原图和 mask 必须**同名**（原图是 .jpg 时，mask 用同名 .png 也可以）
+- 不写 `classes.txt` 时类别名自动生成为 `class_0`、`class_1`...
+- 推理结果会输出彩色叠图（`images/`）和灰度 mask（`masks/`，可直接回头当训练标签）
+
 ### 图像分类：用数据集根目录
 
 分类任务**不用 `data.yaml`**，类别直接来自文件夹名：
@@ -149,10 +173,11 @@ imagenet10/
 | 字段 | 说明 |
 |---|---|
 | 项目名称 | 实验名，只用字母、数字、连字符、下划线，如 `duck_detection_001`。也是结果文件夹名 |
-| 数据集 | 四类任务选 `data.yaml`；分类任务选数据集根目录 |
+| 数据集 | 检测/分割/姿态/旋转框选 `data.yaml`；分类、语义分割选数据集根目录 |
 | 训练结果保存位置 | 权重和日志写到 `保存位置/项目名称/` |
-| 任务类型 | 检测 / 分割 / 分类 / 姿态 / 旋转框，切换后模型列表联动 |
-| YOLO 模型 | 按任务筛选的预训练权重，如 `YOLO26-Nano`、`YOLO11-Nano-seg` |
+| 任务类型 | 检测 / 实例分割 / 语义分割 / 分类 / 姿态 / 旋转框，切换后算法下拉联动 |
+| 算法 | 该任务可用的算法，如分类可选 YOLO 或 CNN；语义分割固定为语义分割网络 |
+| 模型 | 按"任务 + 算法"筛选，如 `YOLO26-Nano`、`ResNet-50`、`U-Net-ResNet34` |
 | 输入尺寸 | 训练图片尺寸，常用 `640`；分类可用 `224` |
 | 训练轮数 | epoch 数，如 `100`；小数据集测试用 `5`~`10` 即可 |
 | 批量大小 | batch size，如 `16`；显存不足就调小（如 `4`） |
@@ -252,20 +277,26 @@ cls conf x1 y1 x2 y2 track_id
 ```
 main.py                    程序入口
 gui_image/                 界面截图（README 引用）
-Dataset/                   内置迷你测试数据集（Ultralytics 官方），clone 后即可验证五种任务
+Dataset/                   内置迷你测试数据集（Ultralytics 官方），clone 后即可验证各任务
   coco8/                   目标检测，8 图，含 data.yaml
   coco8-seg/               实例分割，8 图，含 data.yaml
   coco8-pose/              姿态估计，8 图，含 data.yaml
   dota8/                   旋转框检测，8 图，含 data.yaml
   imagenet10/              图像分类，train/val 按类别文件夹组织，无需 yaml
-src/gui_app.py             CustomTkinter 界面，从插件注册表生成任务/模型下拉
+src/gui_app.py             CustomTkinter 界面，从注册表生成任务/算法/模型三级下拉
 src/gui_text.py            界面文案（中/日/英，默认中文）
-src/plugins/               任务插件注册表（纯元数据，无重型依赖）
-  base.py                  TaskPlugin 定义、register()、派生数据函数
-  yolo.py                  YOLO 五任务插件声明
-src/train.py               训练参数解析、训练执行、环境报告
-src/detect.py              图片/视频推理，按任务写标签，视频跟踪
-src/camera.py              摄像头实时检测、跟踪与截图
+src/plugins/               算法与任务插件注册表（纯元数据，无重型依赖）
+  base.py                  AlgorithmPlugin / Capability 定义、register()、派生查询函数
+  yolo.py                  YOLO 算法声明（5 个任务能力）
+  semseg.py                语义分割算法声明（1 个任务能力）
+  cnn.py                   CNN 分类算法声明（与 YOLO 共享 classify 任务）
+src/train.py               YOLO 训练：参数解析、训练执行、环境报告
+src/train_semseg.py        语义分割训练（U-Net / DeepLabV3+ / FCN）
+src/train_cnn.py           CNN 分类训练（ResNet / EfficientNet / MobileNet）
+src/detect.py              YOLO 图片/视频推理，按任务写标签，视频跟踪
+src/detect_semseg.py       语义分割推理，输出彩色叠图与灰度 mask
+src/detect_cnn.py          CNN 分类推理，输出类别图与标签
+src/camera.py              摄像头实时检测、跟踪与截图（仅 YOLO）
 src/system_report.py       训练环境信息采集
 src/calculate_metrics.py   指标计算辅助
 src/xml_to_txt.py          XML 标注转 YOLO txt 辅助
@@ -275,36 +306,52 @@ LICENSE                    AGPL-3.0 许可证
 
 > 预训练权重（`*.pt`）与训练输出（`runs/`）体积大，不入仓库（见 `.gitignore`）；首次训练会自动下载所选权重，训练产物生成在你指定的保存位置。`Dataset/` 各数据集里的 `runs/` 属于本地调试产物，同样会被忽略上传。
 
-## 扩展新任务
+## 扩展新算法
 
-任务与模型列表不写死在界面里，全部来自 `src/plugins/`。加一个新任务只需两步：
+任务、算法、模型列表都不写死在界面里，全部来自 `src/plugins/`。架构是两个正交维度：**算法**（`AlgorithmPlugin`，决定用哪套执行模块）+ **能力**（`Capability`，决定该算法在某个任务下提供哪些模型）。
 
-**1. 新建插件模块**（如 `src/plugins/my_task.py`）：
+**场景一：给已有任务加一个新算法**（如再给 classify 加一个 Transformer 模型），只需两步：
+
+**1. 新建插件模块**（如 `src/plugins/vit.py`）：
 
 ```python
-from .base import TaskPlugin, register
+from .base import AlgorithmPlugin, Capability, register_algorithm
 
-def register_my_task():
-    register(TaskPlugin(
-        key="my_task",                    # 对应 gui_text 的 task_my_task 文案键
-        model_suffix="-xxx",              # 权重后缀，无则空字符串
-        families=(("MyModel", "mymodel", (("Nano", "n"), ("Small", "s"))),),
-        #          显示名   权重前缀        尺寸档位（显示名, 后缀）
-        dataset_kind="file",              # file=选 data.yaml；folder=选数据集根目录
-        supports_track=False,             # 视频/摄像头是否支持目标跟踪
+def register_vit_algorithm():
+    register_algorithm(AlgorithmPlugin(
+        key="vit",
+        label_key="algo_vit",              # 对应 gui_text 的 algo_vit 文案键
+        train_module="src.train_vit",
+        detect_module="src.detect_vit",
+        detect_func="detect_vit",          # 推理模块内的入口函数名
+        capabilities=(
+            Capability(
+                task="classify",            # 复用已有任务
+                families=(("ViT", "vit", (("Base", "b"), ("Small", "s"))),),
+                dataset_kind="folder",      # file=选 data.yaml；folder=选数据集根目录
+                supports_track=False,
+                family_label="vit_model",   # 模型区标题文案键
+            ),
+        ),
     ))
 ```
 
-**2. 在 `src/plugins/__init__.py` 导入并注册**：
+**2. 在 `src/plugins/__init__.py` 导入并注册**，并在 `src/gui_text.py` 三种语言里补 `algo_vit` 与 `vit_model` 文案。重启后，classify 任务的算法下拉就多出 ViT 一项。
 
-```python
-from .my_task import register_my_task
-register_my_task()
-```
+**场景二：新增一个全新算法 + 全新任务**（如传统 CV、OCR），除上面两步外再建执行模块：
 
-重启程序，任务下拉里就出现新任务，模型列表、数据集选择方式、跟踪开关都按插件声明自动生效。界面代码 `gui_app.py` 不用改。
+- 新建 `src/train_<算法>.py`：命令行参数与 `src/train.py` 一致，进度日志沿用 `GUI_PROGRESS` 协议（分类任务把 Top1 写入 `acc`，分割把 mIoU 写入 `map50`）
+- 新建 `src/detect_<算法>.py`：签名与 `detect_images` 一致（`(folder, model_path, callback, progress_callback, conf_threshold, selected_files, tracking, tracker)`）
+- 在插件里把 `train_module` / `detect_module` / `detect_func` 指向这两个模块
 
-> 设计约束：`src/plugins/` 只放元数据，**不要**在此 import torch / ultralytics / cv2，否则 GUI 启动会变慢。实际训练/推理仍放在独立模块的子进程/子线程中执行。
+内置算法示例：
+- `yolo` → `src.train` / `src.detect`，覆盖 detect / segment / classify / pose / obb
+- `semseg` → `src.train_semseg` / `src.detect_semseg`，覆盖 semseg
+- `cnn` → `src.train_cnn` / `src.detect_cnn`，覆盖 classify（与 yolo 共享任务）
+
+重启程序，任务下拉、算法下拉、模型列表、数据集选择方式、跟踪开关、训练/推理执行模块都按插件声明自动生效。界面主流程代码不用改——探测权重走哪个算法在 `_detect_algorithm_of_weight` 里按 checkpoint 的 `algorithm` 字段自动判断，同样无需改界面。
+
+> 设计约束：`src/plugins/` 只放元数据，**不要**在此 import torch / ultralytics / cv2，否则 GUI 启动会变慢。实际训练/推理仍放在独立模块的子进程/子线程中执行。新算法训练出的权重建议像 `train_cnn.py` 那样在 checkpoint 里写入 `"algorithm": "<key>"`，检测页据此自动分发。
 
 ## 许可证
 
